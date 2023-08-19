@@ -1,503 +1,1069 @@
+// Copyright 2013 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 import 'dart:async';
-import 'dart:math';
+import 'dart:io';
 
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:speech_to_text/speech_recognition_error.dart';
-import 'package:speech_to_text/speech_recognition_result.dart';
-import 'package:speech_to_text/speech_to_text.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:video_player/video_player.dart';
 
-void main() => runApp(const SpeechSampleApp());
-
-class SpeechSampleApp extends StatefulWidget {
-  const SpeechSampleApp({Key? key}) : super(key: key);
+/// Camera example home widget.
+class CameraExampleHome extends StatefulWidget {
+  /// Default Constructor
+  const CameraExampleHome({super.key});
 
   @override
-  State<SpeechSampleApp> createState() => _SpeechSampleAppState();
+  State<CameraExampleHome> createState() {
+    return _CameraExampleHomeState();
+  }
 }
 
-/// An example that demonstrates the basic functionality of the
-/// SpeechToText plugin for using the speech recognition capability
-/// of the underlying platform.
-class _SpeechSampleAppState extends State<SpeechSampleApp> {
-  bool _hasSpeech = false;
-  bool _logEvents = false;
-  bool _onDevice = false;
-  final TextEditingController _pauseForController =
-      TextEditingController(text: '3');
-  final TextEditingController _listenForController =
-      TextEditingController(text: '30');
-  double level = 0.0;
-  double minSoundLevel = 50000;
-  double maxSoundLevel = -50000;
-  String lastWords = '';
-  String lastError = '';
-  String lastStatus = '';
-  String _currentLocaleId = '';
-  List<LocaleName> _localeNames = [];
-  final SpeechToText speech = SpeechToText();
+/// Returns a suitable camera icon for [direction].
+IconData getCameraLensIcon(CameraLensDirection direction) {
+  switch (direction) {
+    case CameraLensDirection.back:
+      return Icons.camera_rear;
+    case CameraLensDirection.front:
+      return Icons.camera_front;
+    case CameraLensDirection.external:
+      return Icons.camera;
+  }
+  // This enum is from a different package, so a new value could be added at
+  // any time. The example should keep working if that happens.
+  // ignore: dead_code
+  return Icons.camera;
+}
+
+void _logError(String code, String? message) {
+  // ignore: avoid_print
+  print('Error: $code${message == null ? '' : '\nError Message: $message'}');
+}
+
+class _CameraExampleHomeState extends State<CameraExampleHome>
+    with WidgetsBindingObserver, TickerProviderStateMixin {
+  CameraController? controller;
+  XFile? imageFile;
+  XFile? videoFile;
+  VideoPlayerController? videoController;
+  VoidCallback? videoPlayerListener;
+  bool enableAudio = true;
+  double _minAvailableExposureOffset = 0.0;
+  double _maxAvailableExposureOffset = 0.0;
+  double _currentExposureOffset = 0.0;
+  late AnimationController _flashModeControlRowAnimationController;
+  late Animation<double> _flashModeControlRowAnimation;
+  late AnimationController _exposureModeControlRowAnimationController;
+  late Animation<double> _exposureModeControlRowAnimation;
+  late AnimationController _focusModeControlRowAnimationController;
+  late Animation<double> _focusModeControlRowAnimation;
+  double _minAvailableZoom = 1.0;
+  double _maxAvailableZoom = 1.0;
+  double _currentScale = 1.0;
+  double _baseScale = 1.0;
+
+  // Counting pointers (number of user fingers on screen)
+  int _pointers = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _flashModeControlRowAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _flashModeControlRowAnimation = CurvedAnimation(
+      parent: _flashModeControlRowAnimationController,
+      curve: Curves.easeInCubic,
+    );
+    _exposureModeControlRowAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _exposureModeControlRowAnimation = CurvedAnimation(
+      parent: _exposureModeControlRowAnimationController,
+      curve: Curves.easeInCubic,
+    );
+    _focusModeControlRowAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _focusModeControlRowAnimation = CurvedAnimation(
+      parent: _focusModeControlRowAnimationController,
+      curve: Curves.easeInCubic,
+    );
   }
 
-  /// This initializes SpeechToText. That only has to be done
-  /// once per application, though calling it again is harmless
-  /// it also does nothing. The UX of the sample app ensures that
-  /// it can only be called once.
-  Future<void> initSpeechState() async {
-    _logEvent('Initialize');
-    try {
-      var hasSpeech = await speech.initialize(
-        onError: errorListener,
-        onStatus: statusListener,
-        debugLogging: _logEvents,
-      );
-      if (hasSpeech) {
-        // Get the list of languages installed on the supporting platform so they
-        // can be displayed in the UI for selection by the user.
-        _localeNames = await speech.locales();
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _flashModeControlRowAnimationController.dispose();
+    _exposureModeControlRowAnimationController.dispose();
+    super.dispose();
+  }
 
-        var systemLocale = await speech.systemLocale();
-        _currentLocaleId = systemLocale?.localeId ?? '';
-      }
-      if (!mounted) return;
+  // #docregion AppLifecycle
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? cameraController = controller;
 
-      setState(() {
-        _hasSpeech = hasSpeech;
-      });
-    } catch (e) {
-      setState(() {
-        lastError = 'Speech recognition failed: ${e.toString()}';
-        _hasSpeech = false;
-      });
+    // App state changed before we got the chance to initialize.
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCameraController(cameraController.description);
     }
   }
+  // #enddocregion AppLifecycle
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Speech to Text Example'),
-        ),
-        body: Column(children: [
-          const HeaderWidget(),
-          Column(
-            children: <Widget>[
-              InitSpeechWidget(_hasSpeech, initSpeechState),
-              SpeechControlWidget(_hasSpeech, speech.isListening,
-                  startListening, stopListening, cancelListening),
-              SessionOptionsWidget(
-                _currentLocaleId,
-                _switchLang,
-                _localeNames,
-                _logEvents,
-                _switchLogging,
-                _pauseForController,
-                _listenForController,
-                _onDevice,
-                _switchOnDevice,
-              ),
-            ],
-          ),
-          Expanded(
-            flex: 4,
-            child: RecognitionResultsWidget(lastWords: lastWords, level: level),
-          ),
-          Expanded(
-            flex: 1,
-            child: ErrorWidget(lastError: lastError),
-          ),
-          SpeechStatusWidget(speech: speech),
-        ]),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Camera example'),
       ),
-    );
-  }
-
-  // This is called each time the users wants to start a new speech
-  // recognition session
-  void startListening() {
-    _logEvent('start listening');
-    lastWords = '';
-    lastError = '';
-    final pauseFor = int.tryParse(_pauseForController.text);
-    final listenFor = int.tryParse(_listenForController.text);
-    // Note that `listenFor` is the maximum, not the minimum, on some
-    // systems recognition will be stopped before this value is reached.
-    // Similarly `pauseFor` is a maximum not a minimum and may be ignored
-    // on some devices.
-    speech.listen(
-      onResult: resultListener,
-      listenFor: Duration(seconds: listenFor ?? 30),
-      pauseFor: Duration(seconds: pauseFor ?? 3),
-      partialResults: true,
-      localeId: _currentLocaleId,
-      onSoundLevelChange: soundLevelListener,
-      cancelOnError: true,
-      listenMode: ListenMode.confirmation,
-      onDevice: _onDevice,
-    );
-    setState(() {});
-  }
-
-  void stopListening() {
-    _logEvent('stop');
-    speech.stop();
-    setState(() {
-      level = 0.0;
-    });
-  }
-
-  void cancelListening() {
-    _logEvent('cancel');
-    speech.cancel();
-    setState(() {
-      level = 0.0;
-    });
-  }
-
-  /// This callback is invoked each time new recognition results are
-  /// available after `listen` is called.
-  void resultListener(SpeechRecognitionResult result) {
-    _logEvent(
-        'Result listener final: ${result.finalResult}, words: ${result.recognizedWords}');
-    setState(() {
-      lastWords = '${result.recognizedWords} - ${result.finalResult}';
-    });
-  }
-
-  void soundLevelListener(double level) {
-    minSoundLevel = min(minSoundLevel, level);
-    maxSoundLevel = max(maxSoundLevel, level);
-    // _logEvent('sound level $level: $minSoundLevel - $maxSoundLevel ');
-    setState(() {
-      this.level = level;
-    });
-  }
-
-  void errorListener(SpeechRecognitionError error) {
-    _logEvent(
-        'Received error status: $error, listening: ${speech.isListening}');
-    setState(() {
-      lastError = '${error.errorMsg} - ${error.permanent}';
-    });
-  }
-
-  void statusListener(String status) {
-    _logEvent(
-        'Received listener status: $status, listening: ${speech.isListening}');
-    setState(() {
-      lastStatus = status;
-    });
-  }
-
-  void _switchLang(selectedVal) {
-    setState(() {
-      _currentLocaleId = selectedVal;
-    });
-    debugPrint(selectedVal);
-  }
-
-  void _logEvent(String eventDescription) {
-    if (_logEvents) {
-      var eventTime = DateTime.now().toIso8601String();
-      debugPrint('$eventTime $eventDescription');
-    }
-  }
-
-  void _switchLogging(bool? val) {
-    setState(() {
-      _logEvents = val ?? false;
-    });
-  }
-
-  void _switchOnDevice(bool? val) {
-    setState(() {
-      _onDevice = val ?? false;
-    });
-  }
-}
-
-/// Displays the most recently recognized words and the sound level.
-class RecognitionResultsWidget extends StatelessWidget {
-  const RecognitionResultsWidget({
-    Key? key,
-    required this.lastWords,
-    required this.level,
-  }) : super(key: key);
-
-  final String lastWords;
-  final double level;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: <Widget>[
-        const Center(
-          child: Text(
-            'Recognized Words',
-            style: TextStyle(fontSize: 22.0),
-          ),
-        ),
-        Expanded(
-          child: Stack(
-            children: <Widget>[
-              Container(
-                color: Theme.of(context).secondaryHeaderColor,
-                child: Center(
-                  child: Text(
-                    lastWords,
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              ),
-              Positioned.fill(
-                bottom: 10,
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      boxShadow: [
-                        BoxShadow(
-                            blurRadius: .26,
-                            spreadRadius: level * 1.5,
-                            color: Colors.black.withOpacity(.05))
-                      ],
-                      color: Colors.white,
-                      borderRadius: const BorderRadius.all(Radius.circular(50)),
-                    ),
-                    child: IconButton(
-                      icon: const Icon(Icons.mic),
-                      onPressed: () {},
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class HeaderWidget extends StatelessWidget {
-  const HeaderWidget({
-    Key? key,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Text(
-        'Speech recognition available',
-        style: TextStyle(fontSize: 22.0),
-      ),
-    );
-  }
-}
-
-/// Display the current error status from the speech
-/// recognizer
-class ErrorWidget extends StatelessWidget {
-  const ErrorWidget({
-    Key? key,
-    required this.lastError,
-  }) : super(key: key);
-
-  final String lastError;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: <Widget>[
-        const Center(
-          child: Text(
-            'Error Status',
-            style: TextStyle(fontSize: 22.0),
-          ),
-        ),
-        Center(
-          child: Text(lastError),
-        ),
-      ],
-    );
-  }
-}
-
-/// Controls to start and stop speech recognition
-class SpeechControlWidget extends StatelessWidget {
-  const SpeechControlWidget(this.hasSpeech, this.isListening,
-      this.startListening, this.stopListening, this.cancelListening,
-      {Key? key})
-      : super(key: key);
-
-  final bool hasSpeech;
-  final bool isListening;
-  final void Function() startListening;
-  final void Function() stopListening;
-  final void Function() cancelListening;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      children: <Widget>[
-        TextButton(
-          onPressed: !hasSpeech || isListening ? null : startListening,
-          child: const Text('Start'),
-        ),
-        TextButton(
-          onPressed: isListening ? stopListening : null,
-          child: const Text('Stop'),
-        ),
-        TextButton(
-          onPressed: isListening ? cancelListening : null,
-          child: const Text('Cancel'),
-        )
-      ],
-    );
-  }
-}
-
-class SessionOptionsWidget extends StatelessWidget {
-  const SessionOptionsWidget(
-      this.currentLocaleId,
-      this.switchLang,
-      this.localeNames,
-      this.logEvents,
-      this.switchLogging,
-      this.pauseForController,
-      this.listenForController,
-      this.onDevice,
-      this.switchOnDevice,
-      {Key? key})
-      : super(key: key);
-
-  final String currentLocaleId;
-  final void Function(String?) switchLang;
-  final void Function(bool?) switchLogging;
-  final void Function(bool?) switchOnDevice;
-  final TextEditingController pauseForController;
-  final TextEditingController listenForController;
-  final List<LocaleName> localeNames;
-  final bool logEvents;
-  final bool onDevice;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: Column(
         children: <Widget>[
-          Row(
-            children: [
-              const Text('Language: '),
-              DropdownButton<String>(
-                onChanged: (selectedVal) => switchLang(selectedVal),
-                value: currentLocaleId,
-                items: localeNames
-                    .map(
-                      (localeName) => DropdownMenuItem(
-                        value: localeName.localeId,
-                        child: Text(localeName.name),
-                      ),
-                    )
-                    .toList(),
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black,
+                border: Border.all(
+                  color:
+                      controller != null && controller!.value.isRecordingVideo
+                          ? Colors.redAccent
+                          : Colors.grey,
+                  width: 3.0,
+                ),
               ),
-            ],
+              child: Padding(
+                padding: const EdgeInsets.all(1.0),
+                child: Center(
+                  child: _cameraPreviewWidget(),
+                ),
+              ),
+            ),
           ),
-          Row(
-            children: [
-              const Text('pauseFor: '),
-              Container(
-                  padding: const EdgeInsets.only(left: 8),
-                  width: 80,
-                  child: TextFormField(
-                    controller: pauseForController,
-                  )),
-              Container(
-                  padding: const EdgeInsets.only(left: 16),
-                  child: const Text('listenFor: ')),
-              Container(
-                  padding: const EdgeInsets.only(left: 8),
-                  width: 80,
-                  child: TextFormField(
-                    controller: listenForController,
-                  )),
-            ],
-          ),
-          Row(
-            children: [
-              const Text('On device: '),
-              Checkbox(
-                value: onDevice,
-                onChanged: switchOnDevice,
-              ),
-              const Text('Log events: '),
-              Checkbox(
-                value: logEvents,
-                onChanged: switchLogging,
-              ),
-            ],
+          _captureControlRowWidget(),
+          _modeControlRowWidget(),
+          Padding(
+            padding: const EdgeInsets.all(5.0),
+            child: Row(
+              children: <Widget>[
+                _cameraTogglesRowWidget(),
+                _thumbnailWidget(),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
-}
 
-class InitSpeechWidget extends StatelessWidget {
-  const InitSpeechWidget(this.hasSpeech, this.initSpeechState, {Key? key})
-      : super(key: key);
+  /// Display the preview from the camera (or a message if the preview is not available).
+  Widget _cameraPreviewWidget() {
+    final CameraController? cameraController = controller;
 
-  final bool hasSpeech;
-  final Future<void> Function() initSpeechState;
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return const Text(
+        'Tap a camera',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 24.0,
+          fontWeight: FontWeight.w900,
+        ),
+      );
+    } else {
+      return Listener(
+        onPointerDown: (_) => _pointers++,
+        onPointerUp: (_) => _pointers--,
+        child: CameraPreview(
+          controller!,
+          child: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints constraints) {
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onScaleStart: _handleScaleStart,
+              onScaleUpdate: _handleScaleUpdate,
+              onTapDown: (TapDownDetails details) =>
+                  onViewFinderTap(details, constraints),
+            );
+          }),
+        ),
+      );
+    }
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
+  void _handleScaleStart(ScaleStartDetails details) {
+    _baseScale = _currentScale;
+  }
+
+  Future<void> _handleScaleUpdate(ScaleUpdateDetails details) async {
+    // When there are not exactly two fingers on screen don't scale
+    if (controller == null || _pointers != 2) {
+      return;
+    }
+
+    _currentScale = (_baseScale * details.scale)
+        .clamp(_minAvailableZoom, _maxAvailableZoom);
+
+    await controller!.setZoomLevel(_currentScale);
+  }
+
+  /// Display the thumbnail of the captured image or video.
+  Widget _thumbnailWidget() {
+    final VideoPlayerController? localVideoController = videoController;
+
+    return Expanded(
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (localVideoController == null && imageFile == null)
+              Container()
+            else
+              SizedBox(
+                width: 64.0,
+                height: 64.0,
+                child: (localVideoController == null)
+                    ? (
+                        // The captured image on the web contains a network-accessible URL
+                        // pointing to a location within the browser. It may be displayed
+                        // either with Image.network or Image.memory after loading the image
+                        // bytes to memory.
+                        kIsWeb
+                            ? Image.network(imageFile!.path)
+                            : Image.file(File(imageFile!.path)))
+                    : Container(
+                        decoration: BoxDecoration(
+                            border: Border.all(color: Colors.pink)),
+                        child: Center(
+                          child: AspectRatio(
+                              aspectRatio:
+                                  localVideoController.value.aspectRatio,
+                              child: VideoPlayer(localVideoController)),
+                        ),
+                      ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Display a bar with buttons to change the flash and exposure modes
+  Widget _modeControlRowWidget() {
+    return Column(
       children: <Widget>[
-        TextButton(
-          onPressed: hasSpeech ? null : initSpeechState,
-          child: const Text('Initialize'),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: <Widget>[
+            IconButton(
+              icon: const Icon(Icons.flash_on),
+              color: Colors.blue,
+              onPressed: controller != null ? onFlashModeButtonPressed : null,
+            ),
+            // The exposure and focus mode are currently not supported on the web.
+            ...!kIsWeb
+                ? <Widget>[
+                    IconButton(
+                      icon: const Icon(Icons.exposure),
+                      color: Colors.blue,
+                      onPressed: controller != null
+                          ? onExposureModeButtonPressed
+                          : null,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.filter_center_focus),
+                      color: Colors.blue,
+                      onPressed:
+                          controller != null ? onFocusModeButtonPressed : null,
+                    )
+                  ]
+                : <Widget>[],
+            IconButton(
+              icon: Icon(enableAudio ? Icons.volume_up : Icons.volume_mute),
+              color: Colors.blue,
+              onPressed: controller != null ? onAudioModeButtonPressed : null,
+            ),
+            IconButton(
+              icon: Icon(controller?.value.isCaptureOrientationLocked ?? false
+                  ? Icons.screen_lock_rotation
+                  : Icons.screen_rotation),
+              color: Colors.blue,
+              onPressed: controller != null
+                  ? onCaptureOrientationLockButtonPressed
+                  : null,
+            ),
+          ],
+        ),
+        _flashModeControlRowWidget(),
+        _exposureModeControlRowWidget(),
+        _focusModeControlRowWidget(),
+      ],
+    );
+  }
+
+  Widget _flashModeControlRowWidget() {
+    return SizeTransition(
+      sizeFactor: _flashModeControlRowAnimation,
+      child: ClipRect(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: <Widget>[
+            IconButton(
+              icon: const Icon(Icons.flash_off),
+              color: controller?.value.flashMode == FlashMode.off
+                  ? Colors.orange
+                  : Colors.blue,
+              onPressed: controller != null
+                  ? () => onSetFlashModeButtonPressed(FlashMode.off)
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.flash_auto),
+              color: controller?.value.flashMode == FlashMode.auto
+                  ? Colors.orange
+                  : Colors.blue,
+              onPressed: controller != null
+                  ? () => onSetFlashModeButtonPressed(FlashMode.auto)
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.flash_on),
+              color: controller?.value.flashMode == FlashMode.always
+                  ? Colors.orange
+                  : Colors.blue,
+              onPressed: controller != null
+                  ? () => onSetFlashModeButtonPressed(FlashMode.always)
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.highlight),
+              color: controller?.value.flashMode == FlashMode.torch
+                  ? Colors.orange
+                  : Colors.blue,
+              onPressed: controller != null
+                  ? () => onSetFlashModeButtonPressed(FlashMode.torch)
+                  : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _exposureModeControlRowWidget() {
+    final ButtonStyle styleAuto = TextButton.styleFrom(
+      foregroundColor: controller?.value.exposureMode == ExposureMode.auto
+          ? Colors.orange
+          : Colors.blue,
+    );
+    final ButtonStyle styleLocked = TextButton.styleFrom(
+      foregroundColor: controller?.value.exposureMode == ExposureMode.locked
+          ? Colors.orange
+          : Colors.blue,
+    );
+
+    return SizeTransition(
+      sizeFactor: _exposureModeControlRowAnimation,
+      child: ClipRect(
+        child: Container(
+          color: Colors.grey.shade50,
+          child: Column(
+            children: <Widget>[
+              const Center(
+                child: Text('Exposure Mode'),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: <Widget>[
+                  TextButton(
+                    style: styleAuto,
+                    onPressed: controller != null
+                        ? () =>
+                            onSetExposureModeButtonPressed(ExposureMode.auto)
+                        : null,
+                    onLongPress: () {
+                      if (controller != null) {
+                        controller!.setExposurePoint(null);
+                        showInSnackBar('Resetting exposure point');
+                      }
+                    },
+                    child: const Text('AUTO'),
+                  ),
+                  TextButton(
+                    style: styleLocked,
+                    onPressed: controller != null
+                        ? () =>
+                            onSetExposureModeButtonPressed(ExposureMode.locked)
+                        : null,
+                    child: const Text('LOCKED'),
+                  ),
+                  TextButton(
+                    style: styleLocked,
+                    onPressed: controller != null
+                        ? () => controller!.setExposureOffset(0.0)
+                        : null,
+                    child: const Text('RESET OFFSET'),
+                  ),
+                ],
+              ),
+              const Center(
+                child: Text('Exposure Offset'),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: <Widget>[
+                  Text(_minAvailableExposureOffset.toString()),
+                  Slider(
+                    value: _currentExposureOffset,
+                    min: _minAvailableExposureOffset,
+                    max: _maxAvailableExposureOffset,
+                    label: _currentExposureOffset.toString(),
+                    onChanged: _minAvailableExposureOffset ==
+                            _maxAvailableExposureOffset
+                        ? null
+                        : setExposureOffset,
+                  ),
+                  Text(_maxAvailableExposureOffset.toString()),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _focusModeControlRowWidget() {
+    final ButtonStyle styleAuto = TextButton.styleFrom(
+      foregroundColor: controller?.value.focusMode == FocusMode.auto
+          ? Colors.orange
+          : Colors.blue,
+    );
+    final ButtonStyle styleLocked = TextButton.styleFrom(
+      foregroundColor: controller?.value.focusMode == FocusMode.locked
+          ? Colors.orange
+          : Colors.blue,
+    );
+
+    return SizeTransition(
+      sizeFactor: _focusModeControlRowAnimation,
+      child: ClipRect(
+        child: Container(
+          color: Colors.grey.shade50,
+          child: Column(
+            children: <Widget>[
+              const Center(
+                child: Text('Focus Mode'),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: <Widget>[
+                  TextButton(
+                    style: styleAuto,
+                    onPressed: controller != null
+                        ? () => onSetFocusModeButtonPressed(FocusMode.auto)
+                        : null,
+                    onLongPress: () {
+                      if (controller != null) {
+                        controller!.setFocusPoint(null);
+                      }
+                      showInSnackBar('Resetting focus point');
+                    },
+                    child: const Text('AUTO'),
+                  ),
+                  TextButton(
+                    style: styleLocked,
+                    onPressed: controller != null
+                        ? () => onSetFocusModeButtonPressed(FocusMode.locked)
+                        : null,
+                    child: const Text('LOCKED'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Display the control bar with buttons to take pictures and record videos.
+  Widget _captureControlRowWidget() {
+    final CameraController? cameraController = controller;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: <Widget>[
+        IconButton(
+          icon: const Icon(Icons.camera_alt),
+          color: Colors.blue,
+          onPressed: cameraController != null &&
+                  cameraController.value.isInitialized &&
+                  !cameraController.value.isRecordingVideo
+              ? onTakePictureButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.videocam),
+          color: Colors.blue,
+          onPressed: cameraController != null &&
+                  cameraController.value.isInitialized &&
+                  !cameraController.value.isRecordingVideo
+              ? onVideoRecordButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: cameraController != null &&
+                  cameraController.value.isRecordingPaused
+              ? const Icon(Icons.play_arrow)
+              : const Icon(Icons.pause),
+          color: Colors.blue,
+          onPressed: cameraController != null &&
+                  cameraController.value.isInitialized &&
+                  cameraController.value.isRecordingVideo
+              ? (cameraController.value.isRecordingPaused)
+                  ? onResumeButtonPressed
+                  : onPauseButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.stop),
+          color: Colors.red,
+          onPressed: cameraController != null &&
+                  cameraController.value.isInitialized &&
+                  cameraController.value.isRecordingVideo
+              ? onStopButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.pause_presentation),
+          color:
+              cameraController != null && cameraController.value.isPreviewPaused
+                  ? Colors.red
+                  : Colors.blue,
+          onPressed:
+              cameraController == null ? null : onPausePreviewButtonPressed,
         ),
       ],
     );
   }
+
+  /// Display a row of toggle to select the camera (or a message if no camera is available).
+  Widget _cameraTogglesRowWidget() {
+    final List<Widget> toggles = <Widget>[];
+
+    void onChanged(CameraDescription? description) {
+      if (description == null) {
+        return;
+      }
+
+      onNewCameraSelected(description);
+    }
+
+    if (_cameras.isEmpty) {
+      SchedulerBinding.instance.addPostFrameCallback((_) async {
+        showInSnackBar('No camera found.');
+      });
+      return const Text('None');
+    } else {
+      for (final CameraDescription cameraDescription in _cameras) {
+        toggles.add(
+          SizedBox(
+            width: 90.0,
+            child: RadioListTile<CameraDescription>(
+              title: Icon(getCameraLensIcon(cameraDescription.lensDirection)),
+              groupValue: controller?.description,
+              value: cameraDescription,
+              onChanged: onChanged,
+            ),
+          ),
+        );
+      }
+    }
+
+    return Row(children: toggles);
+  }
+
+  String timestamp() => DateTime.now().millisecondsSinceEpoch.toString();
+
+  void showInSnackBar(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void onViewFinderTap(TapDownDetails details, BoxConstraints constraints) {
+    if (controller == null) {
+      return;
+    }
+
+    final CameraController cameraController = controller!;
+
+    final Offset offset = Offset(
+      details.localPosition.dx / constraints.maxWidth,
+      details.localPosition.dy / constraints.maxHeight,
+    );
+    cameraController.setExposurePoint(offset);
+    cameraController.setFocusPoint(offset);
+  }
+
+  Future<void> onNewCameraSelected(CameraDescription cameraDescription) async {
+    if (controller != null) {
+      return controller!.setDescription(cameraDescription);
+    } else {
+      return _initializeCameraController(cameraDescription);
+    }
+  }
+
+  Future<void> _initializeCameraController(
+      CameraDescription cameraDescription) async {
+    final CameraController cameraController = CameraController(
+      cameraDescription,
+      kIsWeb ? ResolutionPreset.max : ResolutionPreset.medium,
+      enableAudio: enableAudio,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    controller = cameraController;
+
+    // If the controller is updated then update the UI.
+    cameraController.addListener(() {
+      if (mounted) {
+        setState(() {});
+      }
+      if (cameraController.value.hasError) {
+        showInSnackBar(
+            'Camera error ${cameraController.value.errorDescription}');
+      }
+    });
+
+    try {
+      await cameraController.initialize();
+      await Future.wait(<Future<Object?>>[
+        // The exposure mode is currently not supported on the web.
+        ...!kIsWeb
+            ? <Future<Object?>>[
+                cameraController.getMinExposureOffset().then(
+                    (double value) => _minAvailableExposureOffset = value),
+                cameraController
+                    .getMaxExposureOffset()
+                    .then((double value) => _maxAvailableExposureOffset = value)
+              ]
+            : <Future<Object?>>[],
+        cameraController
+            .getMaxZoomLevel()
+            .then((double value) => _maxAvailableZoom = value),
+        cameraController
+            .getMinZoomLevel()
+            .then((double value) => _minAvailableZoom = value),
+      ]);
+    } on CameraException catch (e) {
+      switch (e.code) {
+        case 'CameraAccessDenied':
+          showInSnackBar('You have denied camera access.');
+          break;
+        case 'CameraAccessDeniedWithoutPrompt':
+          // iOS only
+          showInSnackBar('Please go to Settings app to enable camera access.');
+          break;
+        case 'CameraAccessRestricted':
+          // iOS only
+          showInSnackBar('Camera access is restricted.');
+          break;
+        case 'AudioAccessDenied':
+          showInSnackBar('You have denied audio access.');
+          break;
+        case 'AudioAccessDeniedWithoutPrompt':
+          // iOS only
+          showInSnackBar('Please go to Settings app to enable audio access.');
+          break;
+        case 'AudioAccessRestricted':
+          // iOS only
+          showInSnackBar('Audio access is restricted.');
+          break;
+        default:
+          _showCameraException(e);
+          break;
+      }
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void onTakePictureButtonPressed() {
+    takePicture().then((XFile? file) {
+      if (mounted) {
+        setState(() {
+          imageFile = file;
+          videoController?.dispose();
+          videoController = null;
+        });
+        if (file != null) {
+          showInSnackBar('Picture saved to ${file.path}');
+        }
+      }
+    });
+  }
+
+  void onFlashModeButtonPressed() {
+    if (_flashModeControlRowAnimationController.value == 1) {
+      _flashModeControlRowAnimationController.reverse();
+    } else {
+      _flashModeControlRowAnimationController.forward();
+      _exposureModeControlRowAnimationController.reverse();
+      _focusModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onExposureModeButtonPressed() {
+    if (_exposureModeControlRowAnimationController.value == 1) {
+      _exposureModeControlRowAnimationController.reverse();
+    } else {
+      _exposureModeControlRowAnimationController.forward();
+      _flashModeControlRowAnimationController.reverse();
+      _focusModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onFocusModeButtonPressed() {
+    if (_focusModeControlRowAnimationController.value == 1) {
+      _focusModeControlRowAnimationController.reverse();
+    } else {
+      _focusModeControlRowAnimationController.forward();
+      _flashModeControlRowAnimationController.reverse();
+      _exposureModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onAudioModeButtonPressed() {
+    enableAudio = !enableAudio;
+    if (controller != null) {
+      onNewCameraSelected(controller!.description);
+    }
+  }
+
+  Future<void> onCaptureOrientationLockButtonPressed() async {
+    try {
+      if (controller != null) {
+        final CameraController cameraController = controller!;
+        if (cameraController.value.isCaptureOrientationLocked) {
+          await cameraController.unlockCaptureOrientation();
+          showInSnackBar('Capture orientation unlocked');
+        } else {
+          await cameraController.lockCaptureOrientation();
+          showInSnackBar(
+              'Capture orientation locked to ${cameraController.value.lockedCaptureOrientation.toString().split('.').last}');
+        }
+      }
+    } on CameraException catch (e) {
+      _showCameraException(e);
+    }
+  }
+
+  void onSetFlashModeButtonPressed(FlashMode mode) {
+    setFlashMode(mode).then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+      showInSnackBar('Flash mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onSetExposureModeButtonPressed(ExposureMode mode) {
+    setExposureMode(mode).then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+      showInSnackBar('Exposure mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onSetFocusModeButtonPressed(FocusMode mode) {
+    setFocusMode(mode).then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+      showInSnackBar('Focus mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onVideoRecordButtonPressed() {
+    startVideoRecording().then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  void onStopButtonPressed() {
+    stopVideoRecording().then((XFile? file) {
+      if (mounted) {
+        setState(() {});
+      }
+      if (file != null) {
+        showInSnackBar('Video recorded to ${file.path}');
+        videoFile = file;
+        _startVideoPlayer();
+      }
+    });
+  }
+
+  Future<void> onPausePreviewButtonPressed() async {
+    final CameraController? cameraController = controller;
+
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return;
+    }
+
+    if (cameraController.value.isPreviewPaused) {
+      await cameraController.resumePreview();
+    } else {
+      await cameraController.pausePreview();
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void onPauseButtonPressed() {
+    pauseVideoRecording().then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+      showInSnackBar('Video recording paused');
+    });
+  }
+
+  void onResumeButtonPressed() {
+    resumeVideoRecording().then((_) {
+      if (mounted) {
+        setState(() {});
+      }
+      showInSnackBar('Video recording resumed');
+    });
+  }
+
+  Future<void> startVideoRecording() async {
+    final CameraController? cameraController = controller;
+
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return;
+    }
+
+    if (cameraController.value.isRecordingVideo) {
+      // A recording is already started, do nothing.
+      return;
+    }
+
+    try {
+      await cameraController.startVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return;
+    }
+  }
+
+  Future<XFile?> stopVideoRecording() async {
+    final CameraController? cameraController = controller;
+
+    if (cameraController == null || !cameraController.value.isRecordingVideo) {
+      return null;
+    }
+
+    try {
+      return cameraController.stopVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return null;
+    }
+  }
+
+  Future<void> pauseVideoRecording() async {
+    final CameraController? cameraController = controller;
+
+    if (cameraController == null || !cameraController.value.isRecordingVideo) {
+      return;
+    }
+
+    try {
+      await cameraController.pauseVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> resumeVideoRecording() async {
+    final CameraController? cameraController = controller;
+
+    if (cameraController == null || !cameraController.value.isRecordingVideo) {
+      return;
+    }
+
+    try {
+      await cameraController.resumeVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setFlashMode(FlashMode mode) async {
+    if (controller == null) {
+      return;
+    }
+
+    try {
+      await controller!.setFlashMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setExposureMode(ExposureMode mode) async {
+    if (controller == null) {
+      return;
+    }
+
+    try {
+      await controller!.setExposureMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setExposureOffset(double offset) async {
+    if (controller == null) {
+      return;
+    }
+
+    setState(() {
+      _currentExposureOffset = offset;
+    });
+    try {
+      offset = await controller!.setExposureOffset(offset);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setFocusMode(FocusMode mode) async {
+    if (controller == null) {
+      return;
+    }
+
+    try {
+      await controller!.setFocusMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> _startVideoPlayer() async {
+    if (videoFile == null) {
+      return;
+    }
+
+    final VideoPlayerController vController = kIsWeb
+        // TODO(gabrielokura): remove the ignore once the following line can migrate to
+        // use VideoPlayerController.networkUrl after the issue is resolved.
+        // https://github.com/flutter/flutter/issues/121927
+        // ignore: deprecated_member_use
+        ? VideoPlayerController.network(videoFile!.path)
+        : VideoPlayerController.file(File(videoFile!.path));
+
+    videoPlayerListener = () {
+      if (videoController != null) {
+        // Refreshing the state to update video player with the correct ratio.
+        if (mounted) {
+          setState(() {});
+        }
+        videoController!.removeListener(videoPlayerListener!);
+      }
+    };
+    vController.addListener(videoPlayerListener!);
+    await vController.setLooping(true);
+    await vController.initialize();
+    await videoController?.dispose();
+    if (mounted) {
+      setState(() {
+        imageFile = null;
+        videoController = vController;
+      });
+    }
+    await vController.play();
+  }
+
+  Future<XFile?> takePicture() async {
+    final CameraController? cameraController = controller;
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return null;
+    }
+
+    if (cameraController.value.isTakingPicture) {
+      // A capture is already pending, do nothing.
+      return null;
+    }
+
+    try {
+      final XFile file = await cameraController.takePicture();
+      return file;
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return null;
+    }
+  }
+
+  void _showCameraException(CameraException e) {
+    _logError(e.code, e.description);
+    showInSnackBar('Error: ${e.code}\n${e.description}');
+  }
 }
 
-/// Display the current status of the listener
-class SpeechStatusWidget extends StatelessWidget {
-  const SpeechStatusWidget({
-    Key? key,
-    required this.speech,
-  }) : super(key: key);
-
-  final SpeechToText speech;
+/// CameraApp is the Main Application.
+class CameraApp extends StatelessWidget {
+  /// Default Constructor
+  const CameraApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 20),
-      color: Theme.of(context).colorScheme.background,
-      child: Center(
-        child: speech.isListening
-            ? const Text(
-                "I'm listening...",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              )
-            : const Text(
-                'Not listening',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-      ),
+    return const MaterialApp(
+      home: CameraExampleHome(),
     );
   }
+}
+
+List<CameraDescription> _cameras = <CameraDescription>[];
+
+Future<void> main() async {
+  // Fetch the available cameras before initializing the app.
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+    _cameras = await availableCameras();
+  } on CameraException catch (e) {
+    _logError(e.code, e.description);
+  }
+  runApp(const CameraApp());
 }
