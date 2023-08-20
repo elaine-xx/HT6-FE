@@ -1,11 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
-import 'package:video_player/video_player.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -18,24 +18,31 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with WidgetsBindingObserver, TickerProviderStateMixin {
-  bool _hasSpeech = false;
+  // STT variables
+  String lastWords = '';
+  final bool _onDevice = false;
+  final String _currentLocaleId = '';
+  List<Widget> history = [];
+  final SpeechToText speech = SpeechToText();
+  bool _processingQuestion = false;
+
+  // Photo variables
   CameraController? controller;
   XFile? imageFile;
-  XFile? videoFile;
-  VideoPlayerController? videoController;
-  VoidCallback? videoPlayerListener;
   bool enableAudio = true;
-  final SpeechToText speech = SpeechToText();
-  List<Widget> history = [];
-  String lastWords = '';
-  String _currentLocaleId = '';
-  bool _onDevice = false;
-  bool _processingQuestion = false;
+
+  // TTS variables
 
   @override
   void initState() {
     super.initState();
     initSpeechState();
+
+    availableCameras().then((cameras) {
+      if (cameras.isNotEmpty) {
+        _initializeCameraController(cameras[0]);
+      }
+    });
 
     history.add(
       _buildTextBubble(
@@ -84,13 +91,9 @@ class _HomePageState extends State<HomePage>
 
       if (!mounted) return;
 
-      setState(() {
-        _hasSpeech = hasSpeech;
-      });
+      setState(() {});
     } catch (e) {
-      setState(() {
-        _hasSpeech = false;
-      });
+      setState(() {});
     }
   }
 
@@ -98,22 +101,37 @@ class _HomePageState extends State<HomePage>
   Widget build(BuildContext context) {
     return GestureDetector(
       onLongPressStart: (_) {
-        setState(() {
-          print("onLongPressStart");
-          HapticFeedback.heavyImpact();
-          startListening();
-          // isPopupVisible = true;
-        });
+        if (imageFile != null) {
+          setState(() {
+            print("onLongPressStart");
+            HapticFeedback.heavyImpact();
+            startListening();
+            // isPopupVisible = true;
+          });
+        } else {
+          print("You must first take a picture before asking a question.");
+        }
       },
       onLongPressEnd: (_) {
         setState(() {
           print("onLongPressEnd");
+          stopListening();
           // isPopupVisible = false;
         });
       },
-      onDoubleTap: () {
+      onDoubleTap: () async {
+        XFile? photoFile = await takePicture();
+        if (photoFile == null) {
+          print("Failed to capture photo.");
+          return;
+        }
+        print("Captured photo address: ${photoFile.path}");
         setState(() {
           print("OnDoubleTap");
+          history.add(_buildImageBubble(photoFile));
+
+          history
+              .add(_buildTextBubble("Got it. Let me have a look...", "agent"));
         });
       },
       child: Scaffold(
@@ -169,6 +187,10 @@ class _HomePageState extends State<HomePage>
     setState(() {});
   }
 
+  void stopListening() {
+    speech.stop();
+  }
+
   /// This callback is invoked each time new recognition results are
   /// available after `listen` is called.
   void resultListener(SpeechRecognitionResult result) {
@@ -185,19 +207,28 @@ class _HomePageState extends State<HomePage>
     });
   }
 
-  Widget _buildImageBubble(String imageUrl) {
+  Widget _buildImageBubble(XFile image) {
     return Container(
-      width: 339,
-      height: 319,
-      padding: const EdgeInsets.all(20),
-      decoration: ShapeDecoration(
-        color: const Color(0xFF84F85C),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(30),
+        margin: const EdgeInsets.only(bottom: 27),
+        padding: const EdgeInsets.all(20),
+        decoration: const ShapeDecoration(
+          color: Color(0xFF84F85C),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(30),
+              topRight: Radius.circular(30),
+              bottomRight: Radius.circular(0),
+              bottomLeft: Radius.circular(30),
+            ),
+          ),
         ),
-      ),
-      child: Image.network(imageUrl),
-    );
+        child: ClipRRect(
+          borderRadius: const BorderRadius.all(Radius.circular(20)),
+          child: Image.file(
+            File(image.path),
+            fit: BoxFit.cover,
+          ),
+        ));
   }
 
   Widget _buildTextBubble(String text, String userType) {
@@ -208,7 +239,7 @@ class _HomePageState extends State<HomePage>
       decoration: ShapeDecoration(
         color: userType.toLowerCase() == "agent"
             ? const Color(0xFF3FD8F9)
-            : const Color.fromARGB(255, 131, 249, 63),
+            : const Color(0xFF84F85C),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(30),
@@ -243,12 +274,30 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _initializeCameraController(
       CameraDescription cameraDescription) async {
+    final cameras = await availableCameras();
+
+    CameraDescription? backCamera;
+    for (final camera in cameras) {
+      if (camera.lensDirection == CameraLensDirection.back) {
+        backCamera = camera;
+        break;
+      }
+    }
+
+    if (backCamera == null) {
+      // Handle the case where no back camera is found
+      print("No back camera found.");
+      return;
+    }
+
     final CameraController cameraController = CameraController(
-      cameraDescription,
+      backCamera, // Use the back camera by default
       kIsWeb ? ResolutionPreset.max : ResolutionPreset.medium,
       enableAudio: enableAudio,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
+
+    await cameraController.initialize();
 
     controller = cameraController;
 
@@ -270,6 +319,7 @@ class _HomePageState extends State<HomePage>
 
   Future<XFile?> takePicture() async {
     final CameraController? cameraController = controller;
+    print("Is cameraController null? $cameraController");
     if (cameraController == null || !cameraController.value.isInitialized) {
       showInSnackBar('Error: select a camera first.');
       print("Error: Failed to find camera.");
@@ -278,31 +328,17 @@ class _HomePageState extends State<HomePage>
 
     if (cameraController.value.isTakingPicture) {
       // A capture is already pending, do nothing.
+      print("A capture is already pending.");
       return null;
     }
 
     try {
       final XFile file = await cameraController.takePicture();
+      print("Photo file: $file");
       return file;
     } on CameraException catch (e) {
       print(e);
       return null;
     }
   }
-}
-
-/// Returns a suitable camera icon for [direction].
-IconData getCameraLensIcon(CameraLensDirection direction) {
-  switch (direction) {
-    case CameraLensDirection.back:
-      return Icons.camera_rear;
-    case CameraLensDirection.front:
-      return Icons.camera_front;
-    case CameraLensDirection.external:
-      return Icons.camera;
-  }
-  // This enum is from a different package, so a new value could be added at
-  // any time. The example should keep working if that happens.
-  // ignore: dead_code
-  return Icons.camera;
 }
