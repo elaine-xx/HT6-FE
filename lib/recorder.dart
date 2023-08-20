@@ -97,7 +97,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 SpeechControlWidget(_hasSpeech, speech.isListening,
                     startListening, stopListening, cancelListening),
                 SizedBox(height: 46),
-                TextBubble(),
+                TextBubble(
+                  content: lastWords,
+                ),
               ],
             ),
           ),
@@ -149,7 +151,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// available after `listen` is called.
   void resultListener(SpeechRecognitionResult result) {
     setState(() {
-      lastWords = '${result.recognizedWords} - ${result.finalResult}';
+      lastWords = result.recognizedWords;
       print(lastWords);
     });
   }
@@ -165,9 +167,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
 }
 
 class TextBubble extends StatelessWidget {
-  const TextBubble({
-    super.key,
-  });
+  final String content;
+
+  const TextBubble({Key? key, required this.content})
+      : super(key: key); // Fixed the constructor
 
   @override
   Widget build(BuildContext context) {
@@ -180,7 +183,7 @@ class TextBubble extends StatelessWidget {
           borderRadius: BorderRadius.circular(30),
         ),
       ),
-      child: const Column(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         mainAxisAlignment: MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -188,8 +191,8 @@ class TextBubble extends StatelessWidget {
           SizedBox(
             width: 239,
             child: Text(
-              'Is the person walking sdf sdf sdf sdf sdfsdf sdfsdf sdf sdfsd f sdf sdf sdf sdsdf sdfs df sd sdf lgfgfj  ',
-              style: TextStyle(
+              content,
+              style: const TextStyle(
                 color: Colors.black,
                 fontSize: 21,
                 fontFamily: 'Inter',
@@ -226,13 +229,14 @@ class RecordingIcon extends StatelessWidget {
         child: Center(
           // Center the icon within the container
           child: Icon(Icons.mic,
-              size: 100, color: const Color.fromARGB(255, 255, 255, 255)), // Increased icon size
+              size: 100,
+              color: const Color.fromARGB(
+                  255, 255, 255, 255)), // Increased icon size
         ),
       ),
     );
   }
 }
-
 
 class InitSpeechWidget extends StatelessWidget {
   const InitSpeechWidget(this.hasSpeech, this.initSpeechState, {Key? key})
