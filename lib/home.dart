@@ -20,6 +20,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  final apiUrl = 'https://ht6-be.onrender.com/chat';
   String convoHistory = '';
   late ScrollController _scrollController;
   GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
@@ -211,15 +212,18 @@ class _HomePageState extends State<HomePage>
   /// available after `listen` is called.
   void resultListener(SpeechRecognitionResult result) {
     setState(() {
+      _processingQuestion = true;
       print("ResultsListener()");
       lastWords = result.recognizedWords;
       addBubbleToConveration(_buildTextBubble(lastWords, "user"));
 
-      addBubbleToConveration(_buildTextBubble(
-          "Please wait while I process your question", "agent"));
-      _processingQuestion = true;
+      Future.delayed(Duration(milliseconds: 500), () {
+        addBubbleToConveration(_buildTextBubble(
+            "Please wait a second while I process your question...", "agent"));
+      });
 
-      print(lastWords);
+      sendQuestionToAPI(lastWords)
+          .then((value) => {_processingQuestion = false});
     });
   }
 
@@ -359,7 +363,6 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> sendImageToAPI(XFile photoFile) async {
-    final apiUrl = 'https://ht6-be.onrender.com/chat';
     List<int> imageBytes = await File(photoFile.path).readAsBytes();
 
     try {
@@ -368,6 +371,49 @@ class _HomePageState extends State<HomePage>
         body: jsonEncode({
           "question": "What am I looking at?",
           "history": '',
+          //TODO: Send real image
+          "image_url":
+              "https://s3.amazonaws.com/production.cdn.playcore.com/uploads/news/_articleDetailDesktop2x/US-BP-TBARK-954-S6-Pooch-Perch-Bench-Lifestyle-2.jpg"
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        // API call successful, you can handle the response here
+        print('API Response: ${response.body}');
+        Map<String, dynamic> jsonResponse = jsonDecode(response.body);
+        convoHistory = jsonResponse['history'];
+        final String answer = jsonResponse['answer'];
+        setState(() {
+          addBubbleToConveration(_buildTextBubble(answer, "agent"));
+        });
+      } else {
+        // API call failed, handle the error
+        print('API Call Failed: ${response.statusCode}');
+        setState(() {
+          addBubbleToConveration(_buildTextBubble(
+              "Sorry, something went wrong. Try again in a few seconds.",
+              "agent"));
+        });
+      }
+    } catch (e) {
+      // Error occurred while making the API call
+      print('API Call Error: $e');
+    }
+  }
+
+  Future<void> sendQuestionToAPI(String question) async {
+    try {
+      print("question: $question");
+      print("history: $history");
+
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        body: jsonEncode({
+          "question": question,
+          "history": convoHistory,
           //TODO: Send real image
           "image_url":
               "https://s3.amazonaws.com/production.cdn.playcore.com/uploads/news/_articleDetailDesktop2x/US-BP-TBARK-954-S6-Pooch-Perch-Bench-Lifestyle-2.jpg"
