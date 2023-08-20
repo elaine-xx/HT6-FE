@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:http/http.dart' as http;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -18,6 +20,10 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  String convoHistory = '';
+  late ScrollController _scrollController;
+  GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
+
   // STT variables
   String lastWords = '';
   final bool _onDevice = false;
@@ -36,6 +42,7 @@ class _HomePageState extends State<HomePage>
   @override
   void initState() {
     super.initState();
+    _scrollController = ScrollController();
     initSpeechState();
 
     availableCameras().then((cameras) {
@@ -43,12 +50,11 @@ class _HomePageState extends State<HomePage>
         _initializeCameraController(cameras[0]);
       }
     });
-
-    history.add(
-      _buildTextBubble(
+    Future.delayed(Duration(milliseconds: 500), () {
+      addBubbleToConveration(_buildTextBubble(
           "Hey there!\n\nI'm here as your new pair of eyes, assisting you in exploring the world. To take a photo, simply double-tap anywhere on the screen.\n\nI'll describe the scene to you and answer any questions that you have. Begin whenever you’re ready.",
-          "agent"),
-    );
+          "agent"));
+    });
 
     WidgetsBinding.instance.addObserver(this);
   }
@@ -56,6 +62,7 @@ class _HomePageState extends State<HomePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -120,19 +127,23 @@ class _HomePageState extends State<HomePage>
         });
       },
       onDoubleTap: () async {
-        XFile? photoFile = await takePicture();
-        if (photoFile == null) {
+        imageFile = await takePicture();
+        if (imageFile == null) {
           print("Failed to capture photo.");
           return;
         }
-        print("Captured photo address: ${photoFile.path}");
+        print("Captured photo address: ${imageFile!.path}");
         setState(() {
           print("OnDoubleTap");
-          history.add(_buildImageBubble(photoFile));
 
-          history
-              .add(_buildTextBubble("Got it. Let me have a look...", "agent"));
+          addBubbleToConveration(_buildImageBubble(imageFile!));
+
+          //TODO: Add some delay, so it feels more human.
+          history.add(_buildTextBubble(
+              "Got it. Let me have a look. Please give a few seconds...",
+              "agent"));
         });
+        await sendImageToAPI(imageFile!);
       },
       child: Scaffold(
           appBar: AppBar(
@@ -154,9 +165,14 @@ class _HomePageState extends State<HomePage>
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
-                  child: ListView(
+                  child: ListView.builder(
+                    key: _listKey,
+                    controller: _scrollController,
                     physics: const BouncingScrollPhysics(),
-                    children: [...history],
+                    itemCount: history.length,
+                    itemBuilder: (context, index) {
+                      return history[index];
+                    },
                   ),
                 ),
               ],
@@ -197,9 +213,9 @@ class _HomePageState extends State<HomePage>
     setState(() {
       print("ResultsListener()");
       lastWords = result.recognizedWords;
-      history.add(_buildTextBubble(lastWords, "user"));
+      addBubbleToConveration(_buildTextBubble(lastWords, "user"));
 
-      history.add(_buildTextBubble(
+      addBubbleToConveration(_buildTextBubble(
           "Please wait while I process your question", "agent"));
       _processingQuestion = true;
 
@@ -340,5 +356,61 @@ class _HomePageState extends State<HomePage>
       print(e);
       return null;
     }
+  }
+
+  Future<void> sendImageToAPI(XFile photoFile) async {
+    final apiUrl = 'https://ht6-be.onrender.com/chat';
+    List<int> imageBytes = await File(photoFile.path).readAsBytes();
+
+    try {
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        body: jsonEncode({
+          "question": "What am I looking at?",
+          "history": '',
+          //TODO: Send real image
+          "image_url":
+              "https://s3.amazonaws.com/production.cdn.playcore.com/uploads/news/_articleDetailDesktop2x/US-BP-TBARK-954-S6-Pooch-Perch-Bench-Lifestyle-2.jpg"
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        // API call successful, you can handle the response here
+        print('API Response: ${response.body}');
+        Map<String, dynamic> jsonResponse = jsonDecode(response.body);
+        convoHistory = jsonResponse['history'];
+        final String answer = jsonResponse['answer'];
+        setState(() {
+          addBubbleToConveration(_buildTextBubble(answer, "agent"));
+        });
+      } else {
+        // API call failed, handle the error
+        print('API Call Failed: ${response.statusCode}');
+        setState(() {
+          addBubbleToConveration(_buildTextBubble(
+              "Sorry, something went wrong. Try again in a few seconds.",
+              "agent"));
+        });
+      }
+    } catch (e) {
+      // Error occurred while making the API call
+      print('API Call Error: $e');
+    }
+  }
+
+  void addBubbleToConveration(Widget bubble) {
+    setState(() {
+      history.add(bubble);
+      Future.delayed(Duration(milliseconds: 500), () {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      });
+    });
   }
 }
