@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:camera/camera.dart';
+import 'package:fe/tts.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +25,7 @@ class _HomePageState extends State<HomePage>
   String convoHistory = '';
   late ScrollController _scrollController;
   GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
+  final TtsManager ttsManager = TtsManager();
 
   // STT variables
   String lastWords = '';
@@ -34,7 +36,7 @@ class _HomePageState extends State<HomePage>
   bool _processingQuestion = false;
 
   // Photo variables
-  CameraController? controller;
+  CameraController? cameraController;
   XFile? imageFile;
   bool enableAudio = true;
 
@@ -49,6 +51,8 @@ class _HomePageState extends State<HomePage>
     availableCameras().then((cameras) {
       if (cameras.isNotEmpty) {
         _initializeCameraController(cameras[0]);
+      } else {
+        print("No camera available.");
       }
     });
     Future.delayed(Duration(milliseconds: 500), () {
@@ -67,23 +71,19 @@ class _HomePageState extends State<HomePage>
     super.dispose();
   }
 
-  // #docregion AppLifecycle
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final CameraController? cameraController = controller;
-
     // App state changed before we got the chance to initialize.
-    if (cameraController == null || !cameraController.value.isInitialized) {
+    if (cameraController == null || !cameraController!.value.isInitialized) {
       return;
     }
 
     if (state == AppLifecycleState.inactive) {
-      cameraController.dispose();
+      cameraController!.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      _initializeCameraController(cameraController.description);
+      _initializeCameraController(cameraController!.description);
     }
   }
-  // #enddocregion AppLifecycle
 
   // This initializes SpeechToText. That only has to be done
   /// once per application, though calling it again is harmless
@@ -117,6 +117,8 @@ class _HomePageState extends State<HomePage>
             // isPopupVisible = true;
           });
         } else {
+          ttsManager
+              .speak("You must first take a picture before asking a question.");
           print("You must first take a picture before asking a question.");
         }
       },
@@ -139,11 +141,12 @@ class _HomePageState extends State<HomePage>
 
           addBubbleToConveration(_buildImageBubble(imageFile!));
 
-          //TODO: Add some delay, so it feels more human.
-          history.add(_buildTextBubble(
-              "Got it. Let me have a look. Please give a few seconds...",
-              "agent"));
+          const String msg =
+              "Got it. Let me have a look. Please give a few seconds...";
+          ttsManager.speak(msg);
+          history.add(_buildTextBubble(msg, "agent"));
         });
+
         await sendImageToAPI(imageFile!);
       },
       child: Scaffold(
@@ -218,8 +221,10 @@ class _HomePageState extends State<HomePage>
       addBubbleToConveration(_buildTextBubble(lastWords, "user"));
 
       Future.delayed(Duration(milliseconds: 500), () {
-        addBubbleToConveration(_buildTextBubble(
-            "Please wait a second while I process your question...", "agent"));
+        const String msg =
+            "Please wait a second while I process your question...";
+        ttsManager.speak(msg);
+        addBubbleToConveration(_buildTextBubble(msg, "agent"));
       });
 
       sendQuestionToAPI(lastWords)
@@ -310,25 +315,23 @@ class _HomePageState extends State<HomePage>
       return;
     }
 
-    final CameraController cameraController = CameraController(
+    cameraController = CameraController(
       backCamera, // Use the back camera by default
       kIsWeb ? ResolutionPreset.max : ResolutionPreset.medium,
       enableAudio: enableAudio,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
 
-    await cameraController.initialize();
-
-    controller = cameraController;
+    await cameraController!.initialize();
 
     // If the controller is updated then update the UI.
-    cameraController.addListener(() {
+    cameraController!.addListener(() {
       if (mounted) {
         setState(() {});
       }
-      if (cameraController.value.hasError) {
+      if (cameraController!.value.hasError) {
         showInSnackBar(
-            'Camera error ${cameraController.value.errorDescription}');
+            'Camera error ${cameraController!.value.errorDescription}');
       }
     });
 
@@ -338,25 +341,27 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<XFile?> takePicture() async {
-    final CameraController? cameraController = controller;
     print("Is cameraController null? $cameraController");
-    if (cameraController == null || !cameraController.value.isInitialized) {
-      showInSnackBar('Error: select a camera first.');
+    if (cameraController == null || !cameraController!.value.isInitialized) {
+      ttsManager.speak("Sorry, it seems your camera is unavailable.");
+      showInSnackBar('It seems your camera is unavailable.');
       print("Error: Failed to find camera.");
       return null;
     }
 
-    if (cameraController.value.isTakingPicture) {
+    if (cameraController!.value.isTakingPicture) {
       // A capture is already pending, do nothing.
       print("A capture is already pending.");
       return null;
     }
 
     try {
-      final XFile file = await cameraController.takePicture();
+      final XFile file = await cameraController!.takePicture();
       print("Photo file: $file");
       return file;
     } on CameraException catch (e) {
+      ttsManager.speak(
+          "Sorry, something went wrong when your camera. Try again in a few seconds.");
       print(e);
       return null;
     }
@@ -387,19 +392,22 @@ class _HomePageState extends State<HomePage>
         convoHistory = jsonResponse['history'];
         final String answer = jsonResponse['answer'];
         setState(() {
+          ttsManager.speak(answer);
           addBubbleToConveration(_buildTextBubble(answer, "agent"));
         });
       } else {
         // API call failed, handle the error
         print('API Call Failed: ${response.statusCode}');
         setState(() {
-          addBubbleToConveration(_buildTextBubble(
-              "Sorry, something went wrong. Try again in a few seconds.",
-              "agent"));
+          const String msg =
+              "Sorry, something went wrong when sending the image to me. Try again in a few seconds.";
+          ttsManager.speak(msg);
+          addBubbleToConveration(_buildTextBubble(msg, "agent"));
         });
       }
     } catch (e) {
-      // Error occurred while making the API call
+      ttsManager.speak(
+          "Sorry, something went wrong when sending the image to me. Try again in a few seconds.");
       print('API Call Error: $e');
     }
   }
@@ -429,20 +437,23 @@ class _HomePageState extends State<HomePage>
         Map<String, dynamic> jsonResponse = jsonDecode(response.body);
         convoHistory = jsonResponse['history'];
         final String answer = jsonResponse['answer'];
+        ttsManager.speak(answer);
         setState(() {
           addBubbleToConveration(_buildTextBubble(answer, "agent"));
         });
       } else {
         // API call failed, handle the error
         print('API Call Failed: ${response.statusCode}');
+        const String msg =
+            "Sorry, something went wrong, I couldn't hear your question. Try again in a few seconds.";
+        ttsManager.speak(msg);
         setState(() {
-          addBubbleToConveration(_buildTextBubble(
-              "Sorry, something went wrong. Try again in a few seconds.",
-              "agent"));
+          addBubbleToConveration(_buildTextBubble(msg, "agent"));
         });
       }
     } catch (e) {
-      // Error occurred while making the API call
+      ttsManager.speak(
+          "Sorry, something went wrong, I couldn't hear your question. Try again in a few seconds.");
       print('API Call Error: $e');
     }
   }
