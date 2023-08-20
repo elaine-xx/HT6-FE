@@ -67,8 +67,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    initSpeechState();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       home: Scaffold(
         appBar: AppBar(
           title: const Text('Speak...'),
@@ -88,15 +95,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
               mainAxisAlignment: MainAxisAlignment.start,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                RecordingIcon(
-                  onPressed: () {
-                    print("hi");
-                  },
-                ),
-                InitSpeechWidget(_hasSpeech, initSpeechState),
                 SpeechControlWidget(_hasSpeech, speech.isListening,
                     startListening, stopListening, cancelListening),
-                SizedBox(height: 46),
+                const SizedBox(height: 46),
                 TextBubble(
                   content: lastWords,
                 ),
@@ -206,59 +207,6 @@ class TextBubble extends StatelessWidget {
   }
 }
 
-class RecordingIcon extends StatelessWidget {
-  const RecordingIcon({
-    super.key,
-    required this.onPressed,
-  });
-
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onPressed,
-      borderRadius: BorderRadius.circular(50), // Adjusted for larger container
-      child: Container(
-        width: 150, // Increased width of the container
-        height: 150, // Increased height of the container
-        decoration: ShapeDecoration(
-          color: Color.fromARGB(255, 155, 156, 155),
-          shape: CircleBorder(), // Using a CircleBorder for a circular shape
-        ),
-        child: Center(
-          // Center the icon within the container
-          child: Icon(Icons.mic,
-              size: 100,
-              color: const Color.fromARGB(
-                  255, 255, 255, 255)), // Increased icon size
-        ),
-      ),
-    );
-  }
-}
-
-class InitSpeechWidget extends StatelessWidget {
-  const InitSpeechWidget(this.hasSpeech, this.initSpeechState, {Key? key})
-      : super(key: key);
-
-  final bool hasSpeech;
-  final Future<void> Function() initSpeechState;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      children: <Widget>[
-        TextButton(
-          onPressed: hasSpeech ? null : initSpeechState,
-          child: const Text('Initialize'),
-        ),
-      ],
-    );
-  }
-}
-
 /// Controls to start and stop speech recognition
 class SpeechControlWidget extends StatelessWidget {
   const SpeechControlWidget(this.hasSpeech, this.isListening,
@@ -274,14 +222,23 @@ class SpeechControlWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      children: <Widget>[
-        TextButton(
-          onPressed: !hasSpeech || isListening ? null : startListening,
-          child: const Text('Start'),
+    return InkWell(
+      onTap: !hasSpeech || isListening ? null : startListening,
+      borderRadius: BorderRadius.circular(50), // Adjusted for larger container
+      child: Container(
+        width: 150, // Increased width of the container
+        height: 150, // Increased height of the container
+        decoration: const ShapeDecoration(
+          color: Color.fromARGB(255, 155, 156, 155),
+          shape: CircleBorder(), // Using a CircleBorder for a circular shape
         ),
-      ],
+        child: const Center(
+          // Center the icon within the container
+          child: Icon(Icons.mic,
+              size: 100,
+              color: Color.fromARGB(255, 255, 255, 255)), // Increased icon size
+        ),
+      ),
     );
   }
 }
