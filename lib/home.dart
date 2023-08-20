@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:video_player/video_player.dart';
 
@@ -25,6 +27,10 @@ class _HomePageState extends State<HomePage>
   bool enableAudio = true;
   final SpeechToText speech = SpeechToText();
   List<Widget> history = [];
+  String lastWords = '';
+  String _currentLocaleId = '';
+  bool _onDevice = false;
+  bool _processingQuestion = false;
 
   @override
   void initState() {
@@ -90,34 +96,93 @@ class _HomePageState extends State<HomePage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-        appBar: AppBar(
-          title: const Text('EyeSee'),
-        ),
-        body: Container(
-          width: 390,
-          height: 844,
-          padding: const EdgeInsets.only(
-            top: 10,
-            left: 25,
-            right: 25,
-            bottom: 0,
+    return GestureDetector(
+      onLongPressStart: (_) {
+        setState(() {
+          print("onLongPressStart");
+          HapticFeedback.heavyImpact();
+          startListening();
+          // isPopupVisible = true;
+        });
+      },
+      onLongPressEnd: (_) {
+        setState(() {
+          print("onLongPressEnd");
+          // isPopupVisible = false;
+        });
+      },
+      onDoubleTap: () {
+        setState(() {
+          print("OnDoubleTap");
+        });
+      },
+      child: Scaffold(
+          appBar: AppBar(
+            title: const Text('EyeSee'),
           ),
-          clipBehavior: Clip.antiAlias,
-          decoration: const BoxDecoration(color: Color(0xFFF4F4F4)),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.start,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  children: [...history],
+          body: Container(
+            width: 390,
+            height: 844,
+            padding: const EdgeInsets.only(
+              top: 10,
+              left: 25,
+              right: 25,
+              bottom: 0,
+            ),
+            clipBehavior: Clip.antiAlias,
+            decoration: const BoxDecoration(color: Color(0xFFF4F4F4)),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: ListView(
+                    physics: const BouncingScrollPhysics(),
+                    children: [...history],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ));
+              ],
+            ),
+          )),
+    );
+  }
+
+  // This is called each time the users wants to start a new speech
+  // recognition session
+  void startListening() {
+    lastWords = '';
+
+    // Note that `listenFor` is the maximum, not the minimum, on some
+    // systems recognition will be stopped before this value is reached.
+    // Similarly `pauseFor` is a maximum not a minimum and may be ignored
+    // on some devices.
+    speech.listen(
+      onResult: resultListener,
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
+      partialResults: false,
+      localeId: _currentLocaleId,
+      cancelOnError: true,
+      listenMode: ListenMode.dictation,
+      onDevice: _onDevice,
+    );
+    setState(() {});
+  }
+
+  /// This callback is invoked each time new recognition results are
+  /// available after `listen` is called.
+  void resultListener(SpeechRecognitionResult result) {
+    setState(() {
+      print("ResultsListener()");
+      lastWords = result.recognizedWords;
+      history.add(_buildTextBubble(lastWords, "user"));
+
+      history.add(_buildTextBubble(
+          "Please wait while I process your question", "agent"));
+      _processingQuestion = true;
+
+      print(lastWords);
+    });
   }
 
   Widget _buildImageBubble(String imageUrl) {
@@ -136,18 +201,24 @@ class _HomePageState extends State<HomePage>
   }
 
   Widget _buildTextBubble(String text, String userType) {
+    final isAgentUser = userType.toLowerCase() == "agent";
     return Container(
       margin: const EdgeInsets.only(bottom: 27),
       padding: const EdgeInsets.all(20),
       decoration: ShapeDecoration(
         color: userType.toLowerCase() == "agent"
             ? const Color(0xFF3FD8F9)
-            : const Color(0x0084f85c),
-        shape: const RoundedRectangleBorder(
+            : const Color.fromARGB(255, 131, 249, 63),
+        shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(30),
-            topRight: Radius.circular(30),
-            bottomRight: Radius.circular(30),
+            topLeft: const Radius.circular(30),
+            topRight: const Radius.circular(30),
+            bottomRight: isAgentUser
+                ? const Radius.circular(30)
+                : const Radius.circular(0),
+            bottomLeft: isAgentUser
+                ? const Radius.circular(0)
+                : const Radius.circular(30),
           ),
         ),
       ),
@@ -218,8 +289,6 @@ class _HomePageState extends State<HomePage>
       return null;
     }
   }
-
-  void showInitialAgentPrompt() {}
 }
 
 /// Returns a suitable camera icon for [direction].
@@ -236,18 +305,4 @@ IconData getCameraLensIcon(CameraLensDirection direction) {
   // any time. The example should keep working if that happens.
   // ignore: dead_code
   return Icons.camera;
-}
-
-/// CameraApp is the Main Application.
-class CameraApp extends StatelessWidget {
-  /// Default Constructor
-  const CameraApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: HomePage(),
-    );
-  }
 }
