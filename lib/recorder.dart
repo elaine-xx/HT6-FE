@@ -281,14 +281,6 @@ class SpeechControlWidget extends StatelessWidget {
           onPressed: !hasSpeech || isListening ? null : startListening,
           child: const Text('Start'),
         ),
-        TextButton(
-          onPressed: isListening ? stopListening : null,
-          child: const Text('Stop'),
-        ),
-        TextButton(
-          onPressed: isListening ? cancelListening : null,
-          child: const Text('Cancel'),
-        )
       ],
     );
   }
